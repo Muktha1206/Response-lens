@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Response Lens</title>
+</head>
+<body style="margin:0; padding:20px; background:#0d0e10; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<div id="response-lens-root">
+
+  <!-- Identity gate overlay -->
+  <div id="rl-gate" class="rl-gate">
+    <div class="rl-gate-card">
+      <div class="rl-gate-title">Welcome to Response Lens</div>
+      <div class="rl-gate-subtitle">Quick check-in before you start — not a real login.</div>
+      <div class="rl-field">
+        <label for="rl-gate-email">Your email</label>
+        <input type="text" id="rl-gate-email" placeholder="e.g. priya@kapturecrm.com">
+      </div>
+      <div class="rl-field">
+        <label>You are logging in as</label>
+        <div class="rl-role-toggle">
+          <button type="button" class="rl-role-btn active" data-role="Agent">Agent</button>
+          <button type="button" class="rl-role-btn" data-role="Manager">Manager</button>
+        </div>
+      </div>
+      <div id="rl-gate-error" class="rl-error" style="display:none;"></div>
+      <button id="rl-gate-continue" class="rl-submit">Continue</button>
+    </div>
+  </div>
+
+  <!-- Main app (hidden until identity is set) -->
+  <div id="rl-app" style="display:none;">
+    <div id="rl-header" class="rl-header">
+      <svg class="rl-aperture-mark" viewBox="0 0 38 38">
+        <circle cx="19" cy="19" r="17" fill="none" stroke="#e3a857" stroke-width="1.5"></circle>
+        <g id="rl-aperture-blades"></g>
+      </svg>
+      <div style="flex:1;">
+        <div class="rl-title">Response Lens</div>
+        <div class="rl-subtitle">QA scoring &amp; coaching for support replies</div>
+      </div>
+      <div class="rl-whoami">
+        <span id="rl-whoami-text"></span>
+        <button id="rl-switch-user" class="rl-switch-btn">Switch</button>
+      </div>
+    </div>
+
+    <div class="rl-layout">
+      <div class="rl-col-left">
+        <div class="rl-field-row">
+          <div class="rl-field">
+            <label for="rl-ticket-id">Ticket ID</label>
+            <input type="text" id="rl-ticket-id" placeholder="e.g. TKT-10432">
+          </div>
+          <div class="rl-field">
+            <label for="rl-agent-email">Agent Email ID</label>
+            <input type="text" id="rl-agent-email" placeholder="agent@kapturecrm.com">
+          </div>
+        </div>
+        <div class="rl-field">
+          <label for="rl-customer">What the customer said</label>
+          <textarea id="rl-customer" placeholder="Paste the customer's message or ticket text…"></textarea>
+        </div>
+        <div class="rl-field">
+          <label for="rl-draft">Agent's draft reply</label>
+          <textarea id="rl-draft" placeholder="Paste the draft reply to be scored…"></textarea>
+        </div>
+        <button id="rl-submit" class="rl-submit">Submit</button>
+        <div id="rl-error" class="rl-error" style="display:none;"></div>
+        <div id="rl-loading" class="rl-loading" style="display:none;">
+          <div class="rl-spinner"></div>
+          <span>Running the QA pass…</span>
+        </div>
+      </div>
+
+      <div class="rl-col-right">
+        <div id="rl-placeholder" class="rl-placeholder">Scores and the coached reply will appear here once you submit.</div>
+        <div id="rl-results" class="rl-results"></div>
+      </div>
+    </div>
+
+    <div id="rl-analytics-section" style="display:none;"></div>
+  </div>
+</div>
+
+<style>
+  #response-lens-root {
+    --ink: #14161a;
+    --panel: #1c1f24;
+    --border: #2c3038;
+    --paper: #ece7dd;
+    --muted: #8b9099;
+    --amber: #e3a857;
+    --sage: #7fa287;
+    --clay: #c1666b;
+    --steel: #7091ac;
+    color: var(--paper);
+    background: var(--ink);
+    border-radius: 14px;
+    padding: 28px;
+    max-width: 1020px;
+    margin: 0 auto;
+    box-sizing: border-box;
+    position: relative;
+  }
+  #response-lens-root * { box-sizing: border-box; }
+  #response-lens-root .rl-mono { font-family: 'Courier New', monospace; }
+
+  .rl-gate { display:flex; align-items:center; justify-content:center; min-height:420px; }
+  .rl-gate-card { width:100%; max-width:380px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:28px; }
+  .rl-gate-title { font-size:19px; font-weight:600; color:var(--paper); margin-bottom:4px; }
+  .rl-gate-subtitle { font-size:12.5px; color:var(--muted); margin-bottom:20px; }
+  .rl-gate input[type="text"] { width:100%; padding:10px 12px; background:var(--ink); border:1px solid var(--border); border-radius:8px; color:var(--paper); font-size:13.5px; font-family:inherit; }
+  .rl-gate input[type="text"]:focus { outline:none; border-color:var(--amber); }
+  .rl-role-toggle { display:flex; gap:8px; }
+  .rl-role-btn { flex:1; padding:9px; border-radius:8px; border:1px solid var(--border); background:var(--ink); color:var(--muted); font-family:inherit; font-size:13px; cursor:pointer; transition:all .15s ease; }
+  .rl-role-btn.active { border-color:var(--amber); color:var(--amber); background:rgba(227,168,87,0.08); }
+
+  .rl-whoami { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted); font-family:'Courier New', monospace; }
+  .rl-switch-btn { background:none; border:1px solid var(--border); color:var(--muted); padding:4px 9px; border-radius:6px; font-size:10.5px; cursor:pointer; font-family:inherit; text-transform:uppercase; letter-spacing:0.04em; }
+  .rl-switch-btn:hover { border-color:var(--amber); color:var(--amber); }
+
+  .rl-header { display:flex; align-items:center; gap:14px; margin-bottom:22px; }
+  .rl-aperture-mark { width:38px; height:38px; flex-shrink:0; }
+  .rl-title { font-size:26px; font-weight:600; letter-spacing:-0.01em; color:var(--paper); }
+  .rl-subtitle { font-size:12.5px; color:var(--muted); margin-top:2px; letter-spacing:0.02em; }
+
+  .rl-layout { display:grid; grid-template-columns: 1fr 1fr; gap:28px; align-items:start; }
+  .rl-col-left { position:sticky; top:0; }
+  @media (max-width: 720px) { .rl-layout { grid-template-columns: 1fr; } .rl-col-left { position:static; } }
+
+  .rl-field-row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:6px; }
+  @media (max-width: 480px) { .rl-field-row { grid-template-columns: 1fr; } }
+
+  .rl-field { margin-bottom:16px; }
+  .rl-field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:7px; font-family:'Courier New', monospace; }
+  .rl-field textarea, .rl-field input[type="text"] { width:100%; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; color:var(--paper); font-size:14px; line-height:1.5; font-family:inherit; transition:border-color .15s ease; }
+  .rl-field textarea { min-height:76px; resize:vertical; }
+  .rl-field input[type="text"] { padding:10px 12px; font-size:13.5px; }
+  .rl-field textarea:focus, .rl-field input[type="text"]:focus { outline:none; border-color:var(--amber); }
+  .rl-field textarea::placeholder, .rl-field input::placeholder { color:#5a5f68; }
+
+  .rl-submit { width:100%; padding:13px; border:none; border-radius:8px; background:var(--amber); color:#1c1400; font-weight:600; font-size:14.5px; cursor:pointer; letter-spacing:0.01em; transition:filter .15s ease, transform .1s ease; font-family:inherit; }
+  .rl-submit:hover:not(:disabled) { filter:brightness(1.08); }
+  .rl-submit:active:not(:disabled) { transform:scale(0.995); }
+  .rl-submit:disabled { opacity:0.55; cursor:default; }
+
+  .rl-error { margin-top:14px; padding:12px 14px; background:rgba(193,102,107,0.12); border:1px solid var(--clay); border-radius:8px; color:#e8b0b3; font-size:13px; }
+
+  .rl-placeholder { display:flex; align-items:center; justify-content:center; height:100%; min-height:220px; border:1px dashed var(--border); border-radius:12px; color:var(--muted); font-size:13.5px; text-align:center; padding:24px; }
+
+  .rl-results { display:none; }
+  .rl-results.show { display:block; animation: rlFade .35s ease; }
+  @keyframes rlFade { from { opacity:0; transform:translateY(6px);} to { opacity:1; transform:translateY(0);} }
+
+  .rl-escalation-banner { display:flex; align-items:center; gap:12px; padding:13px 16px; margin-bottom:14px; background:linear-gradient(135deg, rgba(193,102,107,0.22), rgba(193,102,107,0.1)); border:1.5px solid var(--clay); border-radius:10px; }
+  .rl-escalation-icon { font-size:18px; flex-shrink:0; }
+  .rl-escalation-text { font-size:13.5px; font-weight:700; color:#f2c1c3; text-transform:uppercase; letter-spacing:0.04em; font-family:'Courier New', monospace; }
+
+  .rl-win-tag { display:flex; align-items:flex-start; gap:10px; padding:12px 15px; margin-bottom:14px; background:rgba(227,168,87,0.1); border:1px solid rgba(227,168,87,0.4); border-radius:10px; }
+  .rl-win-icon { font-size:15px; flex-shrink:0; margin-top:1px; }
+  .rl-win-text { font-size:13.5px; line-height:1.4; color:var(--paper); }
+  .rl-win-label { font-family:'Courier New', monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--amber); display:block; margin-bottom:3px; }
+
+  .rl-verdict-row { display:flex; align-items:center; gap:20px; padding:18px; background:var(--panel); border:1px solid var(--border); border-radius:12px; margin-bottom:14px; }
+  .rl-gauge { flex-shrink:0; }
+  .rl-verdict-text { flex:1; }
+  .rl-verdict-badge { display:inline-block; font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; padding:4px 10px; border-radius:20px; margin-bottom:8px; font-family:'Courier New', monospace; }
+  .rl-badge-strong { background:rgba(127,162,135,0.18); color:var(--sage); }
+  .rl-badge-needswork { background:rgba(227,168,87,0.18); color:var(--amber); }
+  .rl-badge-offtrack { background:rgba(193,102,107,0.18); color:var(--clay); }
+  .rl-summary { font-size:14.5px; color:var(--paper); line-height:1.45; }
+  .rl-risk-tag { font-size:11px; color:var(--muted); margin-top:6px; font-family:'Courier New', monospace; letter-spacing:0.03em; }
+  .rl-risk-tag.risky { color:var(--clay); }
+
+  .rl-trend { display:flex; align-items:center; gap:6px; margin-top:6px; font-family:'Courier New', monospace; font-size:11px; color:var(--muted); }
+  .rl-trend-up { color:var(--sage); }
+  .rl-trend-down { color:var(--clay); }
+  .rl-trend-flat { color:var(--muted); }
+
+  .rl-fatal { display:flex; gap:10px; align-items:flex-start; padding:13px 15px; background:rgba(193,102,107,0.1); border:1px solid rgba(193,102,107,0.4); border-radius:10px; margin-bottom:14px; }
+  .rl-fatal-icon { color:var(--clay); font-size:15px; margin-top:1px; }
+  .rl-fatal-text { font-size:13.5px; color:#e8b0b3; line-height:1.4; }
+  .rl-fatal-text b { color:#f0c4c6; }
+
+  .rl-section-label { font-size:11px; text-transform:uppercase; letter-spacing:0.09em; color:var(--muted); font-family:'Courier New', monospace; margin:22px 0 10px; display:flex; align-items:center; gap:8px; }
+  .rl-section-label::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  .rl-param-list { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .rl-param { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border); font-size:13.5px; }
+  .rl-param:last-child { border-bottom:none; }
+  .rl-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .rl-dot-pass { background:var(--sage); }
+  .rl-dot-partial { background:var(--amber); }
+  .rl-dot-gap { background:var(--clay); }
+  .rl-param-name { flex:1; color:var(--paper); }
+  .rl-param-score { font-family:'Courier New', monospace; color:var(--muted); font-size:12.5px; }
+  .rl-notscored { font-size:12px; color:var(--muted); padding:10px 14px; line-height:1.5; font-style:italic; }
+
+  .rl-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:15px 16px; margin-bottom:10px; }
+  .rl-card-header { display:flex; align-items:center; justify-content:flex-end; margin-bottom:4px; }
+  .rl-card-body { font-size:14px; line-height:1.55; color:var(--paper); }
+  .rl-card-body ul { margin:0; padding-left:18px; }
+  .rl-card-body li { margin-bottom:5px; }
+  .rl-resolution-line { margin-bottom:9px; }
+  .rl-resolution-line:last-child { margin-bottom:0; }
+  .rl-resolution-tag { font-size:10.5px; color:var(--muted); font-family:'Courier New', monospace; text-transform:uppercase; letter-spacing:0.05em; margin-right:6px; }
+
+  .rl-copy-btn { display:inline-flex; align-items:center; gap:6px; background:none; border:1px solid var(--border); color:var(--muted); font-family:'Courier New', monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; padding:5px 10px; border-radius:6px; cursor:pointer; transition:border-color .15s ease, color .15s ease; }
+  .rl-copy-btn:hover { border-color:var(--amber); color:var(--amber); }
+  .rl-copy-btn.copied { border-color:var(--sage); color:var(--sage); }
+
+  .rl-pointers { list-style:none; margin:0; padding:0; }
+  .rl-pointers li { display:flex; gap:10px; padding:9px 0; border-bottom:1px solid var(--border); font-size:13.5px; color:var(--paper); line-height:1.4; }
+  .rl-pointers li:last-child { border-bottom:none; }
+  .rl-pointers .rl-num { font-family:'Courier New', monospace; color:var(--amber); flex-shrink:0; }
+
+  .rl-viewmore { background:none; border:1px solid var(--border); color:var(--muted); font-family:'Courier New', monospace; font-size:11.5px; text-transform:uppercase; letter-spacing:0.06em; padding:9px 14px; border-radius:8px; cursor:pointer; display:flex; align-items:center; gap:7px; margin-top:18px; transition:border-color .15s ease, color .15s ease; }
+  .rl-viewmore:hover { border-color:var(--amber); color:var(--amber); }
+  .rl-viewmore .rl-chevron { transition:transform .2s ease; display:inline-block; }
+  .rl-viewmore.open .rl-chevron { transform:rotate(180deg); }
+  .rl-details { overflow:hidden; max-height:0; transition:max-height .3s ease; }
+  .rl-details.open { max-height:1200px; }
+
+  .rl-loading { display:flex; align-items:center; gap:10px; padding:16px; color:var(--muted); font-size:13.5px; }
+  .rl-spinner { width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--amber); border-radius:50%; animation:rlspin .7s linear infinite; }
+  @keyframes rlspin { to { transform:rotate(360deg); } }
+
+  .rl-feedback-box textarea { width:100%; min-height:64px; resize:vertical; background:var(--ink); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:var(--paper); font-size:13.5px; font-family:inherit; margin-bottom:8px; }
+  .rl-feedback-box textarea:focus { outline:none; border-color:var(--amber); }
+  .rl-feedback-flag { display:flex; align-items:flex-start; gap:8px; margin-bottom:10px; font-size:12.5px; color:var(--muted); line-height:1.4; cursor:pointer; }
+  .rl-feedback-flag input { margin-top:3px; flex-shrink:0; cursor:pointer; }
+  .rl-feedback-flag:hover { color:var(--paper); }
+  .rl-feedback-save { background:var(--amber); border:none; color:#1c1400; font-weight:600; font-family:inherit; font-size:13.5px; padding:11px 18px; border-radius:8px; cursor:pointer; width:100%; transition:filter .15s ease, transform .1s ease; }
+  .rl-feedback-save:hover:not(:disabled) { filter:brightness(1.08); }
+  .rl-feedback-save:active:not(:disabled) { transform:scale(0.995); }
+  .rl-feedback-save.saved { background:var(--sage); color:#0f1f14; }
+  .rl-feedback-save:disabled { opacity:0.6; cursor:default; }
+  .rl-feedback-note { font-size:11px; color:var(--muted); margin-top:6px; }
+
+  .rl-primary-btn { display:block; width:100%; padding:13px; border:none; border-radius:8px; background:var(--amber); color:#1c1400; font-weight:600; font-size:14.5px; cursor:pointer; letter-spacing:0.01em; transition:filter .15s ease, transform .1s ease; font-family:inherit; text-align:center; margin-top:4px; }
+  .rl-primary-btn:hover:not(:disabled) { filter:brightness(1.08); }
+  .rl-primary-btn:active:not(:disabled) { transform:scale(0.995); }
+  .rl-primary-btn:disabled { opacity:0.6; cursor:default; }
+  .rl-secondary-btn { display:inline-flex; align-items:center; gap:6px; background:none; border:1px solid var(--border); color:var(--muted); font-family:inherit; font-size:12.5px; padding:8px 14px; border-radius:8px; cursor:pointer; margin-top:4px; transition:border-color .15s ease, color .15s ease; }
+  .rl-secondary-btn:hover { border-color:var(--steel); color:var(--steel); }
+
+  .rl-analytics-panel { margin-top:32px; padding-top:22px; border-top:1px solid var(--border); }
+  .rl-analytics-title { font-size:18px; font-weight:600; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .rl-analytics-sub { font-size:12px; color:var(--muted); margin-bottom:16px; }
+  .rl-stat-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-bottom:18px; }
+  @media (max-width: 640px) { .rl-stat-grid { grid-template-columns: 1fr; } }
+  .rl-stat-card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .rl-stat-value { font-size:26px; font-weight:700; color:var(--amber); font-family:'Courier New', monospace; }
+  .rl-stat-label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; margin-top:4px; }
+  .rl-weak-list { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:14px; }
+  .rl-weak-row { display:flex; justify-content:space-between; padding:9px 14px; border-bottom:1px solid var(--border); font-size:13px; }
+  .rl-weak-row:last-child { border-bottom:none; }
+  .rl-weak-count { color:var(--clay); font-family:'Courier New', monospace; }
+
+  .rl-tool-feedback-list { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:14px; }
+  .rl-tool-feedback-row { padding:12px 14px; border-bottom:1px solid var(--border); font-size:13px; }
+  .rl-tool-feedback-row:last-child { border-bottom:none; }
+  .rl-tool-feedback-meta { font-size:10.5px; color:var(--muted); font-family:'Courier New', monospace; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px; }
+  .rl-tool-feedback-text { color:var(--paper); line-height:1.45; }
+</style>
+
+<script>
+(function() {
+  'use strict';
+
+  var root = document.getElementById('response-lens-root');
+
+  // ---- Identity gate (uses ordinary localStorage — this is a real website now) ----
+  var gateEl = root.querySelector('#rl-gate');
+  var appEl = root.querySelector('#rl-app');
+  var gateEmailEl = root.querySelector('#rl-gate-email');
+  var gateErrorEl = root.querySelector('#rl-gate-error');
+  var gateContinueBtn = root.querySelector('#rl-gate-continue');
+  var roleButtons = Array.prototype.slice.call(root.querySelectorAll('.rl-role-btn'));
+  var whoamiText = root.querySelector('#rl-whoami-text');
+  var switchUserBtn = root.querySelector('#rl-switch-user');
+  var agentEmailFieldEl = root.querySelector('#rl-agent-email');
+  var analyticsSection = root.querySelector('#rl-analytics-section');
+
+  var identity = { email: '', role: 'Agent' };
+
+  roleButtons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      roleButtons.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+    });
+  });
+
+  function activeRole() {
+    var active = roleButtons.filter(function(b) { return b.classList.contains('active'); })[0];
+    return active ? active.dataset.role : 'Agent';
+  }
+
+  function showGate() {
+    appEl.style.display = 'none';
+    gateEl.style.display = 'flex';
+  }
+
+  function enterApp() {
+    gateEl.style.display = 'none';
+    appEl.style.display = 'block';
+    whoamiText.textContent = identity.email + ' · ' + identity.role;
+    if (identity.role === 'Agent' && agentEmailFieldEl && !agentEmailFieldEl.value) {
+      agentEmailFieldEl.value = identity.email;
+    }
+    if (identity.role === 'Manager') {
+      analyticsSection.style.display = 'block';
+      renderAnalyticsPanel();
+    } else {
+      analyticsSection.style.display = 'none';
+    }
+  }
+
+  gateContinueBtn.addEventListener('click', function() {
+    var email = gateEmailEl.value.trim();
+    if (!email) {
+      gateErrorEl.textContent = 'Please enter your email.';
+      gateErrorEl.style.display = 'block';
+      return;
+    }
+    gateErrorEl.style.display = 'none';
+    identity = { email: email, role: activeRole() };
+    try { localStorage.setItem('rl_identity', JSON.stringify(identity)); } catch (e) {}
+    enterApp();
+  });
+
+  switchUserBtn.addEventListener('click', function() {
+    gateEmailEl.value = identity.email;
+    roleButtons.forEach(function(b) { b.classList.toggle('active', b.dataset.role === identity.role); });
+    showGate();
+  });
+
+  (function initIdentity() {
+    try {
+      var saved = localStorage.getItem('rl_identity');
+      if (saved) {
+        identity = JSON.parse(saved);
+        enterApp();
+        return;
+      }
+    } catch (e) {}
+    showGate();
+  })();
+
+  // ---- Main app elements ----
+  var customerEl = root.querySelector('#rl-customer');
+  var draftEl = root.querySelector('#rl-draft');
+  var ticketIdEl = root.querySelector('#rl-ticket-id');
+  var submitBtn = root.querySelector('#rl-submit');
+  var errorEl = root.querySelector('#rl-error');
+  var loadingEl = root.querySelector('#rl-loading');
+  var placeholderEl = root.querySelector('#rl-placeholder');
+  var resultsEl = root.querySelector('#rl-results');
+  var bladesEl = root.querySelector('#rl-aperture-blades');
+
+  var scoreHistory = [];
+  var currentRunId = null;
+
+  (function drawAperture() {
+    var html = '';
+    for (var i = 0; i < 6; i++) {
+      html += '<path d="M19 19 L19 4 A15 15 0 0 1 32 12 Z" fill="#e3a857" opacity="0.85" transform="rotate(' + (i * 60) + ' 19 19)"></path>';
+    }
+    bladesEl.innerHTML = html;
+  })();
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function gaugeSvg(pct, color) {
+    var r = 30, c = 2 * Math.PI * r;
+    var offset = c - (pct / 100) * c;
+    return '<svg class="rl-gauge" width="76" height="76" viewBox="0 0 76 76">' +
+      '<circle cx="38" cy="38" r="' + r + '" fill="none" stroke="#2c3038" stroke-width="6"></circle>' +
+      '<circle cx="38" cy="38" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="6" ' +
+      'stroke-dasharray="' + c + '" stroke-dashoffset="' + offset + '" stroke-linecap="round" transform="rotate(-90 38 38)"></circle>' +
+      '<text x="38" y="43" text-anchor="middle" fill="#ece7dd" font-size="16" font-family="Courier New, monospace" font-weight="600">' + Math.round(pct) + '%</text>' +
+      '</svg>';
+  }
+
+  function sparklineSvg(points, color) {
+    if (points.length < 2) return '';
+    var w = 60, h = 22, pad = 2;
+    var min = Math.min.apply(null, points), max = Math.max.apply(null, points);
+    var range = (max - min) || 1;
+    var step = (w - pad * 2) / (points.length - 1);
+    var coords = points.map(function(p, i) {
+      var x = pad + i * step;
+      var y = h - pad - ((p - min) / range) * (h - pad * 2);
+      return x + ',' + y;
+    }).join(' ');
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="flex-shrink:0;">' +
+      '<polyline points="' + coords + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>' +
+      '</svg>';
+  }
+
+  function paramScore(p) {
+    if (p.status === 'pass') return p.weight;
+    if (p.status === 'partial') return Math.floor(p.weight / 2);
+    return 0;
+  }
+
+  var dotClass = { pass: 'rl-dot-pass', partial: 'rl-dot-partial', gap: 'rl-dot-gap' };
+
+  function setLoading(isLoading) {
+    submitBtn.disabled = isLoading;
+    submitBtn.textContent = isLoading ? 'Scoring…' : 'Submit';
+    loadingEl.style.display = isLoading ? 'flex' : 'none';
+  }
+
+  function showError(msg) {
+    errorEl.textContent = msg;
+    errorEl.style.display = 'block';
+  }
+  function clearError() {
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+  }
+
+  function csvField(val) {
+    var s = String(val === null || val === undefined ? '' : val);
+    if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function triggerDownload(filename, content, mime) {
+    var blob = new Blob([content], { type: mime + ';charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ---- Backend calls ----
+  async function apiScore(customerMessage, draftReply) {
+    var res = await fetch('/api/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerMessage: customerMessage, draftReply: draftReply })
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Scoring failed.');
+    return data;
+  }
+
+  async function apiSaveRun(row) {
+    var res = await fetch('/api/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(row)
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save run.');
+    return data;
+  }
+
+  async function apiUpdateRun(id, patch) {
+    var res = await fetch('/api/runs/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update run.');
+    return data;
+  }
+
+  async function apiFetchRuns() {
+    var res = await fetch('/api/runs');
+    if (!res.ok) throw new Error('Could not load runs.');
+    return res.json();
+  }
+
+  async function apiSaveToolFeedback(entry) {
+    var res = await fetch('/api/tool-feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry)
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save tool feedback.');
+    return data;
+  }
+
+  async function apiFetchToolFeedback() {
+    var res = await fetch('/api/tool-feedback');
+    if (!res.ok) throw new Error('Could not load tool feedback.');
+    return res.json();
+  }
+
+  async function downloadSharedCSV(btn) {
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⬇ Preparing…';
+    try {
+      var rows = await apiFetchRuns();
+      rows.sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+
+      var paramNames = [
+        'Greeting', 'Paraphrase + action-oriented ack', 'Offered further assistance',
+        'Writing quality', 'Tone & empathy', 'Referenced history/attachments',
+        'Right troubleshooting', 'Resolution analysis articulated',
+        'Clear work instructions/attachments', 'ETA provided'
+      ];
+
+      var headers = ['timestamp', 'agent_email', 'ticket_id', 'customer_message', 'draft_reply',
+        'verdict', 'total_score', 'risk_level', 'fatal_flag', 'fatal_reason'
+      ].concat(paramNames.map(function(n) { return 'param: ' + n; }))
+       .concat(['probing', 'resolution_greeting', 'resolution_empathy', 'resolution_opening',
+         'resolution_body', 'resolution_decision', 'resolution_signoff', 'coaching_pointers', 'feedback_comment']);
+
+      var csvRows = [headers.map(csvField).join(',')];
+
+      rows.forEach(function(row) {
+        var paramStatusByName = {};
+        (row.scorecard || []).forEach(function(p) { paramStatusByName[p.name] = p.status; });
+        var r = row.resolution || {};
+        var line = [
+          row.timestamp, row.agentEmail, row.ticketId, row.customerMessage, row.draftReply,
+          row.verdict, row.totalScore, row.riskLevel, row.fatalFlag ? 'Yes' : 'No', row.fatalReason || ''
+        ].concat(paramNames.map(function(n) { return paramStatusByName[n] || ''; }))
+         .concat([
+           row.probing || '',
+           r.greeting || '', r.empathy || '', r.opening || '',
+           (r.body || []).join(' | '), r.decision || '', r.signoff || '',
+           (row.pointers || []).join(' | '),
+           row.feedback || ''
+         ]);
+        csvRows.push(line.map(csvField).join(','));
+      });
+
+      var csvContent = csvRows.join('\n');
+      var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      triggerDownload('response-lens-shared-log-' + stamp + '.csv', csvContent, 'text/csv');
+    } catch (e) {
+      showError('Could not export the shared log: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+
+  function renderResult(result, meta) {
+    var verdictBadgeClass = result.verdict === 'Strong' ? 'rl-badge-strong' :
+      result.verdict === 'Off track' ? 'rl-badge-offtrack' : 'rl-badge-needswork';
+    var gaugeColor = result.verdict === 'Strong' ? '#7fa287' :
+      result.verdict === 'Off track' ? '#c1666b' : '#e3a857';
+
+    var scorePct = 0, scoreDisplay = '';
+    if (result.scorecard && result.scorecard.totalScore) {
+      var parts = result.scorecard.totalScore.split('/');
+      var num = parseFloat(parts[0]);
+      var den = parseFloat(parts[1]) || 65;
+      scorePct = (num / den) * 100;
+      scoreDisplay = result.scorecard.totalScore;
+    }
+
+    scoreHistory.push(scorePct);
+    if (scoreHistory.length > 10) scoreHistory.shift();
+
+    var trendDirection = 'flat', trendDelta = 0;
+    if (scoreHistory.length >= 2) {
+      var current = scoreHistory[scoreHistory.length - 1];
+      var previous = scoreHistory[scoreHistory.length - 2];
+      trendDelta = Math.round(current - previous);
+      trendDirection = trendDelta > 0 ? 'up' : trendDelta < 0 ? 'down' : 'flat';
+    }
+    var trendColor = trendDirection === 'up' ? '#7fa287' : trendDirection === 'down' ? '#c1666b' : '#8b9099';
+    var trendArrow = trendDirection === 'up' ? '↑ +' : trendDirection === 'down' ? '↓ ' : '→ ';
+
+    var html = '';
+
+    if (result.riskLevel === 'Escalation risk') {
+      html += '<div class="rl-escalation-banner"><span class="rl-escalation-icon">🚩</span>' +
+        '<span class="rl-escalation-text">Escalation risk — handle with care</span></div>';
+    }
+
+    if (result.pointers && result.pointers.length > 0) {
+      html += '<div class="rl-win-tag"><span class="rl-win-icon">★</span>' +
+        '<div class="rl-win-text"><span class="rl-win-label">Biggest win</span>' + escapeHtml(result.pointers[0]) + '</div></div>';
+    }
+
+    html += '<div class="rl-verdict-row">' + gaugeSvg(scorePct, gaugeColor) +
+      '<div class="rl-verdict-text">' +
+      '<div class="rl-verdict-badge ' + verdictBadgeClass + '">' + escapeHtml(result.verdict) + '</div>' +
+      '<div class="rl-summary">' + escapeHtml(result.summary) + '</div>' +
+      '<div class="rl-risk-tag ' + (result.riskLevel === 'Escalation risk' ? 'risky' : '') + '">' + escapeHtml(result.riskLevel) + ' · ' + escapeHtml(scoreDisplay) + ' pts</div>';
+
+    if (scoreHistory.length >= 2) {
+      html += '<div class="rl-trend">' + sparklineSvg(scoreHistory, trendColor) +
+        '<span class="rl-trend-' + trendDirection + '">' + trendArrow + trendDelta + ' pts</span>' +
+        '<span>· last ' + scoreHistory.length + ' (this session)</span></div>';
+    }
+    html += '</div></div>';
+
+    if (result.fatalFlag && result.fatalFlag.present) {
+      html += '<div class="rl-fatal"><div class="rl-fatal-icon">⚠</div>' +
+        '<div class="rl-fatal-text"><b>Fatal flaw: </b>' + escapeHtml(result.fatalFlag.reason) + '</div></div>';
+    }
+
+    html += '<div class="rl-section-label">Probing check</div>' +
+      '<div class="rl-card"><div class="rl-card-body">' + escapeHtml(result.response.probing) + '</div></div>';
+
+    var r = result.response.resolution;
+    html += '<div class="rl-section-label">Client-ready reply</div><div class="rl-card">' +
+      '<div class="rl-card-header"><button class="rl-copy-btn" id="rl-copy-btn">⧉ Copy</button></div><div class="rl-card-body">';
+    if (r.greeting) html += '<div class="rl-resolution-line"><span class="rl-resolution-tag">Greeting</span>' + escapeHtml(r.greeting) + '</div>';
+    if (r.empathy) html += '<div class="rl-resolution-line"><span class="rl-resolution-tag">Empathy</span>' + escapeHtml(r.empathy) + '</div>';
+    html += '<div class="rl-resolution-line"><span class="rl-resolution-tag">Opening</span>' + escapeHtml(r.opening) + '</div>' +
+      '<div class="rl-resolution-line"><span class="rl-resolution-tag">Detail</span><ul>' +
+      (r.body || []).map(function(b) { return '<li>' + escapeHtml(b) + '</li>'; }).join('') + '</ul></div>' +
+      '<div class="rl-resolution-line"><span class="rl-resolution-tag">Next step</span>' + escapeHtml(r.decision) + '</div>' +
+      '<div class="rl-resolution-line"><span class="rl-resolution-tag">Sign-off</span>' + escapeHtml(r.signoff) + '</div></div></div>';
+
+    html += '<div class="rl-section-label">Coaching pointers</div><ul class="rl-pointers">' +
+      (result.pointers || []).map(function(p, i) {
+        return '<li><span class="rl-num rl-mono">0' + (i + 1) + '</span><span>' + escapeHtml(p) + '</span></li>';
+      }).join('') + '</ul>';
+
+    html += '<div class="rl-section-label">Feedback</div><div class="rl-card rl-feedback-box">' +
+      '<textarea id="rl-feedback-input" placeholder="Add a comment on this reply or the score (visible to the team)…"></textarea>' +
+      '<label class="rl-feedback-flag"><input type="checkbox" id="rl-feedback-tool-flag">' +
+      '<span>This is feedback about Response Lens itself — the scoring parameters, prompt, or how it judged this reply — not just this one ticket. Flag it so the admin reviews it separately.</span></label>' +
+      '<button class="rl-feedback-save" id="rl-feedback-save">Save feedback</button>' +
+      '<div class="rl-feedback-note" id="rl-feedback-note"></div></div>';
+
+    html += '<button class="rl-viewmore" id="rl-viewmore-btn"><span id="rl-viewmore-label">View more — scorecard details</span><span class="rl-chevron">▾</span></button>';
+
+    html += '<div class="rl-details" id="rl-details"><div class="rl-section-label">Scorecard</div><div class="rl-param-list">' +
+      (result.scorecard.parameters || []).map(function(p) {
+        return '<div class="rl-param"><div class="rl-dot ' + (dotClass[p.status] || 'rl-dot-gap') + '"></div>' +
+          '<div class="rl-param-name">' + escapeHtml(p.name) + '</div>' +
+          '<div class="rl-param-score rl-mono">' + paramScore(p) + '/' + p.weight + '</div></div>';
+      }).join('') +
+      '<div class="rl-notscored">' + escapeHtml(result.scorecard.notScored) + '</div></div></div>';
+
+    resultsEl.innerHTML = html;
+    resultsEl.classList.add('show');
+    placeholderEl.style.display = 'none';
+
+    var copyBtn = resultsEl.querySelector('#rl-copy-btn');
+    copyBtn.addEventListener('click', function() {
+      var textParts = [];
+      if (r.greeting) textParts.push(r.greeting);
+      if (r.empathy) textParts.push(r.empathy);
+      textParts.push(r.opening);
+      (r.body || []).forEach(function(b) { textParts.push(b); });
+      textParts.push(r.decision);
+      textParts.push(r.signoff);
+      navigator.clipboard.writeText(textParts.join('\n\n')).then(function() {
+        copyBtn.textContent = '✓ Copied';
+        copyBtn.classList.add('copied');
+        setTimeout(function() { copyBtn.textContent = '⧉ Copy'; copyBtn.classList.remove('copied'); }, 1800);
+      });
+    });
+
+    var viewMoreBtn = resultsEl.querySelector('#rl-viewmore-btn');
+    var detailsEl = resultsEl.querySelector('#rl-details');
+    var viewMoreLabel = resultsEl.querySelector('#rl-viewmore-label');
+    var open = false;
+    viewMoreBtn.addEventListener('click', function() {
+      open = !open;
+      viewMoreBtn.classList.toggle('open', open);
+      detailsEl.classList.toggle('open', open);
+      viewMoreLabel.textContent = open ? 'Hide scorecard details' : 'View more — scorecard details';
+    });
+
+    var feedbackSaveBtn = resultsEl.querySelector('#rl-feedback-save');
+    var feedbackInput = resultsEl.querySelector('#rl-feedback-input');
+    var feedbackNote = resultsEl.querySelector('#rl-feedback-note');
+    var feedbackToolFlag = resultsEl.querySelector('#rl-feedback-tool-flag');
+    feedbackSaveBtn.addEventListener('click', async function() {
+      if (!currentRunId) return;
+      var comment = feedbackInput.value.trim();
+      var isToolFeedback = feedbackToolFlag && feedbackToolFlag.checked;
+      feedbackSaveBtn.disabled = true;
+      feedbackSaveBtn.textContent = 'Saving…';
+      try {
+        await apiUpdateRun(currentRunId, { feedback: comment });
+        if (isToolFeedback && comment) {
+          await apiSaveToolFeedback({
+            submittedBy: identity.email,
+            role: identity.role,
+            ticketId: meta.row.ticketId,
+            comment: comment
+          });
+        }
+        feedbackSaveBtn.textContent = '✓ Saved';
+        feedbackSaveBtn.classList.add('saved');
+        feedbackNote.textContent = isToolFeedback
+          ? 'Saved — also flagged for admin review as tool feedback.'
+          : 'Feedback saved to the shared log for this ticket.';
+        setTimeout(function() {
+          feedbackSaveBtn.textContent = 'Save feedback';
+          feedbackSaveBtn.classList.remove('saved');
+          feedbackSaveBtn.disabled = false;
+        }, 1800);
+      } catch (e) {
+        feedbackNote.textContent = 'Could not save feedback: ' + e.message;
+        feedbackSaveBtn.disabled = false;
+        feedbackSaveBtn.textContent = 'Save feedback';
+      }
+    });
+  }
+
+  async function handleSubmit() {
+    var customerMsg = customerEl.value.trim();
+    var draftReply = draftEl.value.trim();
+    var ticketId = ticketIdEl.value.trim();
+    var agentEmail = agentEmailFieldEl.value.trim();
+    clearError();
+
+    if (!customerMsg || !draftReply) {
+      showError('Add both the customer message and the draft reply.');
+      return;
+    }
+
+    setLoading(true);
+    resultsEl.classList.remove('show');
+    currentRunId = null;
+
+    try {
+      var parsed = await apiScore(customerMsg, draftReply);
+
+      var row = {
+        agentEmail: agentEmail,
+        ticketId: ticketId,
+        customerMessage: customerMsg,
+        draftReply: draftReply,
+        verdict: parsed.verdict,
+        totalScore: (parsed.scorecard && parsed.scorecard.totalScore) || '',
+        riskLevel: parsed.riskLevel,
+        fatalFlag: !!(parsed.fatalFlag && parsed.fatalFlag.present),
+        fatalReason: (parsed.fatalFlag && parsed.fatalFlag.reason) || '',
+        scorecard: (parsed.scorecard && parsed.scorecard.parameters) || [],
+        probing: (parsed.response && parsed.response.probing) || '',
+        resolution: (parsed.response && parsed.response.resolution) || {},
+        pointers: parsed.pointers || [],
+        feedback: ''
+      };
+
+      var saved = await apiSaveRun(row);
+      currentRunId = saved.id;
+      renderResult(parsed, { row: row });
+
+      if (identity.role === 'Manager') renderAnalyticsPanel();
+    } catch (err) {
+      showError('Could not score this reply: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  submitBtn.addEventListener('click', handleSubmit);
+
+  // ---- Manager analytics ----
+  async function renderAnalyticsPanel() {
+    analyticsSection.innerHTML =
+      '<div class="rl-analytics-panel">' +
+      '<div class="rl-analytics-title">📊 Manager Analytics</div>' +
+      '<div class="rl-analytics-sub">Pulled from the shared log — every agent, every ticket.</div>' +
+      '<button class="rl-primary-btn" id="rl-analytics-csv-btn" style="max-width:360px;">⬇ Download CSV — full shared log</button>' +
+      '<div style="display:flex; align-items:center; gap:10px; margin-top:10px;">' +
+      '<button class="rl-secondary-btn" id="rl-refresh-analytics">↻ Refresh data</button>' +
+      '<span style="font-size:11.5px; color:var(--muted);">Reloads the latest tickets from the shared log — use after other agents run new tickets.</span></div>' +
+      '<div id="rl-analytics-body" style="margin-top:14px;"></div></div>';
+
+    var refreshBtn = analyticsSection.querySelector('#rl-refresh-analytics');
+    refreshBtn.addEventListener('click', loadAndRenderAnalytics);
+    var analyticsCsvBtn = analyticsSection.querySelector('#rl-analytics-csv-btn');
+    analyticsCsvBtn.addEventListener('click', function() { downloadSharedCSV(analyticsCsvBtn); });
+    loadAndRenderAnalytics();
+
+    async function loadAndRenderAnalytics() {
+      var bodyEl = analyticsSection.querySelector('#rl-analytics-body');
+      bodyEl.innerHTML = '<div class="rl-loading" style="display:flex;"><div class="rl-spinner"></div><span>Loading shared log…</span></div>';
+      try {
+        var rows = await apiFetchRuns();
+        var toolFeedbackRows = await apiFetchToolFeedback();
+
+        var html = '';
+
+        if (rows.length === 0) {
+          html += '<div class="rl-placeholder" style="min-height:100px;">No tickets scored yet across the team.</div>';
+        } else {
+          var total = rows.length;
+          var sumPct = 0, scoredCount = 0, escalationCount = 0;
+          var gapCounts = {};
+
+          rows.forEach(function(row) {
+            if (row.totalScore) {
+              var parts = row.totalScore.split('/');
+              var num = parseFloat(parts[0]);
+              var den = parseFloat(parts[1]) || 65;
+              if (!isNaN(num)) { sumPct += (num / den) * 100; scoredCount++; }
+            }
+            if (row.riskLevel === 'Escalation risk') escalationCount++;
+            (row.scorecard || []).forEach(function(p) {
+              if (p.status === 'gap') gapCounts[p.name] = (gapCounts[p.name] || 0) + 1;
+            });
+          });
+
+          var avgScore = scoredCount ? Math.round(sumPct / scoredCount) : 0;
+          var weakList = Object.keys(gapCounts)
+            .map(function(name) { return { name: name, count: gapCounts[name] }; })
+            .sort(function(a, b) { return b.count - a.count; })
+            .slice(0, 5);
+
+          html += '<div class="rl-stat-grid">' +
+            '<div class="rl-stat-card"><div class="rl-stat-value">' + total + '</div><div class="rl-stat-label">Total tickets scored</div></div>' +
+            '<div class="rl-stat-card"><div class="rl-stat-value">' + avgScore + '%</div><div class="rl-stat-label">Average score</div></div>' +
+            '<div class="rl-stat-card"><div class="rl-stat-value">' + escalationCount + '</div><div class="rl-stat-label">Escalation-risk tickets</div></div></div>';
+
+          html += '<div class="rl-section-label">Most common weak parameters</div>';
+          if (weakList.length === 0) {
+            html += '<div class="rl-placeholder" style="min-height:60px;">No gaps recorded yet — nice work, team.</div>';
+          } else {
+            html += '<div class="rl-weak-list">' + weakList.map(function(w) {
+              return '<div class="rl-weak-row"><span>' + escapeHtml(w.name) + '</span><span class="rl-weak-count">' + w.count + ' ticket' + (w.count === 1 ? '' : 's') + '</span></div>';
+            }).join('') + '</div>';
+          }
+        }
+
+        html += '<div class="rl-section-label">Tool feedback from the team</div>';
+        if (toolFeedbackRows.length === 0) {
+          html += '<div class="rl-placeholder" style="min-height:60px;">No tool feedback flagged yet.</div>';
+        } else {
+          toolFeedbackRows.sort(function(a, b) { return new Date(b.timestamp) - new Date(a.timestamp); });
+          html += '<div class="rl-tool-feedback-list">' + toolFeedbackRows.map(function(f) {
+            var when = new Date(f.timestamp).toLocaleString();
+            var meta = when + ' · ' + (f.submittedBy || 'unknown') + ' · ' + (f.role || '') + (f.ticketId ? ' · re: ' + f.ticketId : '');
+            return '<div class="rl-tool-feedback-row"><div class="rl-tool-feedback-meta">' + escapeHtml(meta) + '</div>' +
+              '<div class="rl-tool-feedback-text">' + escapeHtml(f.comment) + '</div></div>';
+          }).join('') + '</div>';
+        }
+
+        bodyEl.innerHTML = html;
+      } catch (e) {
+        bodyEl.innerHTML = '<div class="rl-error" style="display:block;">Could not load analytics: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+  }
+
+})();
+</script>
+</body>
+</html>

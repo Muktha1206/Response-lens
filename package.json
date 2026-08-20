@@ -1,0 +1,16 @@
+{
+  "name": "response-lens-standalone",
+  "version": "1.0.0",
+  "description": "Response Lens — QA coaching tool for Kapture CX support replies (standalone, no Claude.ai account needed)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}
