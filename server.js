@@ -25,8 +25,19 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const API_KEY = process.env.GEMINI_API_KEY;
+
+// If GEMINI_MODEL is set, try it first. Either way, fall back through this list
+// automatically if a model name turns out to be wrong/retired (404) — this is
+// how Response Lens survives Google renaming/retiring models without needing
+// a manual fix each time.
+const MODEL_CANDIDATES = [
+  process.env.GEMINI_MODEL,
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest',
+  'gemini-2.0-flash'
+].filter(Boolean);
 
 const DATA_DIR = path.join(__dirname, 'data');
 const RUNS_FILE = path.join(DATA_DIR, 'runs.json');
@@ -137,8 +148,8 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGemini(userContent) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
+async function callGemini(userContent, modelName) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000); // don't hang forever
@@ -147,7 +158,10 @@ async function callGemini(userContent) {
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': API_KEY
+      },
       signal: controller.signal,
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: userContent }] }],
@@ -175,11 +189,7 @@ async function callGemini(userContent) {
     const err = new Error('Gemini API error: ' + errText);
     err.status = response.status;
     err.raw = errText;
-    if (response.status === 404) {
-      err.friendly = `The model "${MODEL}" was not found or is no longer available. ` +
-        `Check the GEMINI_MODEL setting in your environment variables — Google occasionally ` +
-        `retires model names, and the error from Gemini usually names the replacement to use.`;
-    }
+    err.modelNotFound = response.status === 404;
     throw err;
   }
 
@@ -231,6 +241,8 @@ function isRetryable(err) {
   return false;
 }
 
+let workingModel = null; // once we find a model that works, stick with it for future requests
+
 app.post('/api/score', async (req, res) => {
   if (!API_KEY) {
     return res.status(500).json({ error: 'Server is not configured with a GEMINI_API_KEY. See README.md.' });
@@ -241,28 +253,43 @@ app.post('/api/score', async (req, res) => {
   }
 
   const userContent = `CUSTOMER MESSAGE:\n${customerMessage}\n\nAGENT DRAFT REPLY:\n${draftReply}`;
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS_PER_MODEL = 3;
+  const modelsToTry = workingModel ? [workingModel, ...MODEL_CANDIDATES] : MODEL_CANDIDATES;
   let lastErr;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const parsed = await callGemini(userContent);
-      return res.json(parsed);
-    } catch (err) {
-      lastErr = err;
-      console.error(`[score attempt ${attempt}/${MAX_ATTEMPTS}] ` + err.message);
-      if (attempt < MAX_ATTEMPTS && isRetryable(err)) {
-        await sleep(attempt * 1000); // 1s, then 2s
-        continue;
+  for (const modelName of modelsToTry) {
+    let modelFailed = false;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
+      try {
+        const parsed = await callGemini(userContent, modelName);
+        workingModel = modelName; // remember what worked
+        return res.json(parsed);
+      } catch (err) {
+        lastErr = err;
+        console.error(`[score] model=${modelName} attempt=${attempt}/${MAX_ATTEMPTS_PER_MODEL}: ${err.message}`);
+
+        if (err.modelNotFound) {
+          modelFailed = true; // move on to the next candidate model, don't retry this one
+          break;
+        }
+        if (attempt < MAX_ATTEMPTS_PER_MODEL && isRetryable(err)) {
+          await sleep(attempt * 1000); // 1s, then 2s
+          continue;
+        }
+        break;
       }
-      break;
     }
+
+    if (!modelFailed) break; // stop cascading unless it was specifically "model not found"
   }
 
   const friendly = lastErr.friendly
-    || (isRetryable(lastErr)
-      ? 'Gemini is busy right now. Please try Submit again in a moment.'
-      : 'Could not score this reply: ' + lastErr.message);
+    || (lastErr.modelNotFound
+      ? 'None of the configured Gemini models are available right now. Check GEMINI_MODEL and your API key.'
+      : isRetryable(lastErr)
+        ? 'Gemini is busy right now. Please try Submit again in a moment.'
+        : 'Could not score this reply: ' + lastErr.message);
   res.status(503).json({ error: friendly });
 });
 
