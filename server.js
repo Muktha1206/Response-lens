@@ -25,7 +25,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const API_KEY = process.env.GEMINI_API_KEY;
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -133,6 +133,104 @@ Respond with ONLY a JSON object. No preamble, no markdown fences:
 }`;
 
 // ---- POST /api/score — proxy to Gemini, key never leaves the server ----
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callGemini(userContent) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000); // don't hang forever
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: userContent }] }],
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        generationConfig: {
+          maxOutputTokens: 2048,
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+  } catch (fetchErr) {
+    const err = new Error(
+      fetchErr.name === 'AbortError'
+        ? 'The request took too long and timed out.'
+        : 'Could not reach Gemini: ' + fetchErr.message
+    );
+    err.retryable = true;
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    const errText = await response.text();
+    const err = new Error('Gemini API error: ' + errText);
+    err.status = response.status;
+    err.raw = errText;
+    if (response.status === 404) {
+      err.friendly = `The model "${MODEL}" was not found or is no longer available. ` +
+        `Check the GEMINI_MODEL setting in your environment variables — Google occasionally ` +
+        `retires model names, and the error from Gemini usually names the replacement to use.`;
+    }
+    throw err;
+  }
+
+  const data = await response.json();
+
+  // Content can be withheld by Gemini's safety filters — this is not transient,
+  // so don't waste retries on it; tell the agent plainly instead.
+  const blockReason = data.promptFeedback && data.promptFeedback.blockReason;
+  if (blockReason) {
+    const err = new Error(
+      `This message was withheld by Gemini's safety filters (${blockReason}). ` +
+      `Try rephrasing the customer message or draft reply.`
+    );
+    err.friendly = err.message;
+    throw err;
+  }
+
+  const candidate = data.candidates && data.candidates[0];
+  const text = candidate && candidate.content && candidate.content.parts &&
+    candidate.content.parts[0] && candidate.content.parts[0].text;
+
+  if (!text) {
+    const err = new Error('No text response from model.');
+    err.retryable = true;
+    throw err;
+  }
+
+  const finishReason = candidate.finishReason;
+  const clean = text.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '');
+
+  try {
+    return JSON.parse(clean);
+  } catch (parseErr) {
+    const err = new Error(
+      finishReason === 'MAX_TOKENS'
+        ? 'The response was cut off before finishing.'
+        : 'The response could not be read as valid JSON.'
+    );
+    err.retryable = true;
+    throw err;
+  }
+}
+
+function isRetryable(err) {
+  if (err.friendly) return false; // explicit, non-transient — don't retry
+  if (err.retryable) return true;
+  if (err.status === 503 || err.status === 429) return true; // busy / rate-limited
+  if (err.raw && /UNAVAILABLE|overloaded/i.test(err.raw)) return true;
+  return false;
+}
+
 app.post('/api/score', async (req, res) => {
   if (!API_KEY) {
     return res.status(500).json({ error: 'Server is not configured with a GEMINI_API_KEY. See README.md.' });
@@ -141,43 +239,31 @@ app.post('/api/score', async (req, res) => {
   if (!customerMessage || !draftReply) {
     return res.status(400).json({ error: 'customerMessage and draftReply are required.' });
   }
-  try {
-    const userContent = `CUSTOMER MESSAGE:\n${customerMessage}\n\nAGENT DRAFT REPLY:\n${draftReply}`;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: userContent }] }],
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        generationConfig: {
-          maxOutputTokens: 1000,
-          responseMimeType: 'application/json'
-        }
-      })
-    });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: 'Gemini API error: ' + errText });
+  const userContent = `CUSTOMER MESSAGE:\n${customerMessage}\n\nAGENT DRAFT REPLY:\n${draftReply}`;
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const parsed = await callGemini(userContent);
+      return res.json(parsed);
+    } catch (err) {
+      lastErr = err;
+      console.error(`[score attempt ${attempt}/${MAX_ATTEMPTS}] ` + err.message);
+      if (attempt < MAX_ATTEMPTS && isRetryable(err)) {
+        await sleep(attempt * 1000); // 1s, then 2s
+        continue;
+      }
+      break;
     }
-
-    const data = await response.json();
-    const text = data.candidates &&
-      data.candidates[0] &&
-      data.candidates[0].content &&
-      data.candidates[0].content.parts &&
-      data.candidates[0].content.parts[0] &&
-      data.candidates[0].content.parts[0].text;
-
-    if (!text) return res.status(502).json({ error: 'No text response from model.' });
-
-    const clean = text.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '');
-    const parsed = JSON.parse(clean);
-    res.json(parsed);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
+
+  const friendly = lastErr.friendly
+    || (isRetryable(lastErr)
+      ? 'Gemini is busy right now. Please try Submit again in a moment.'
+      : 'Could not score this reply: ' + lastErr.message);
+  res.status(503).json({ error: friendly });
 });
 
 // ---- Runs (the shared log) ----
@@ -215,6 +301,14 @@ app.post('/api/tool-feedback', (req, res) => {
 
 app.get('/api/tool-feedback', (req, res) => {
   res.json(readJSON(TOOL_FEEDBACK_FILE));
+});
+
+// ---- Safety nets: keep serving everyone else even if one request misbehaves ----
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection (server stays up):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server stays up):', err);
 });
 
 app.listen(PORT, () => {
