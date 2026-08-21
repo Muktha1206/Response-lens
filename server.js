@@ -25,7 +25,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
 const API_KEY = process.env.GEMINI_API_KEY;
 
 const DATA_DIR = path.join(__dirname, 'data');
