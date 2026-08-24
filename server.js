@@ -347,12 +347,12 @@ app.post('/api/score', async (req, res) => {
   }
 
   const userContent = `CUSTOMER MESSAGE:\n${customerMessage}\n\nAGENT DRAFT REPLY:\n${draftReply}`;
-  const MAX_ATTEMPTS_PER_MODEL = 3;
+  const MAX_ATTEMPTS_PER_MODEL = 2; // fewer retries per model now that we cascade across several
   const modelsToTry = workingModel ? [workingModel, ...MODEL_CANDIDATES] : MODEL_CANDIDATES;
   let lastErr;
 
   for (const modelName of modelsToTry) {
-    let modelFailed = false;
+    let moveToNextModel = false;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
       try {
@@ -363,26 +363,31 @@ app.post('/api/score', async (req, res) => {
         lastErr = err;
         console.error(`[score] model=${modelName} attempt=${attempt}/${MAX_ATTEMPTS_PER_MODEL}: ${err.message}`);
 
-        if (err.modelNotFound) {
-          modelFailed = true; // move on to the next candidate model, don't retry this one
+        if (err.friendly) {
+          // Explicit, non-transient, not model-specific (e.g. safety block) — no
+          // point trying other models, stop immediately.
+          moveToNextModel = false;
           break;
         }
-        if (attempt < MAX_ATTEMPTS_PER_MODEL && isRetryable(err)) {
-          await sleep(attempt * 1000); // 1s, then 2s
+        if (attempt < MAX_ATTEMPTS_PER_MODEL && isRetryable(err) && !err.modelNotFound) {
+          await sleep(attempt * 800); // brief pause before retrying the same model
           continue;
         }
+        // Either "model not found" or we've used up retries on a busy/transient
+        // error — either way, try the next model in the list instead of giving up.
+        moveToNextModel = true;
         break;
       }
     }
 
-    if (!modelFailed) break; // stop cascading unless it was specifically "model not found"
+    if (!moveToNextModel) break;
   }
 
   const friendly = lastErr.friendly
     || (lastErr.modelNotFound
       ? 'None of the configured Gemini models are available right now. Check GEMINI_MODEL and your API key.'
       : isRetryable(lastErr)
-        ? 'Gemini is busy right now. Please try Submit again in a moment.'
+        ? 'All available Gemini models are busy right now. Please try Submit again in a moment.'
         : 'Could not score this reply: ' + lastErr.message);
   res.status(503).json({ error: friendly });
 });
