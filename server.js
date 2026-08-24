@@ -447,44 +447,69 @@ app.get('/api/tool-feedback', async (req, res) => {
 
 // ---- Diagnostic: check what Gemini says about the real key on this server ----
 // Visit /api/debug-gemini in a browser to see this. It never reveals the key
-// itself — only whether Google accepts it and which models it can use.
+// itself — only whether Google accepts it and whether an actual scoring-style
+// call succeeds.
 app.get('/api/debug-gemini', async (req, res) => {
   if (!API_KEY) {
     return res.json({ ok: false, reason: 'No GEMINI_API_KEY is set on this server at all.' });
   }
+
+  const result = {
+    keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4)
+  };
+
+  // Step 1: list models (cheap, low-stakes check)
   try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+    const listResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
       headers: { 'x-goog-api-key': API_KEY }
     });
-    const text = await response.text();
-    let parsed;
-    try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+    const listText = await listResponse.text();
+    let listParsed;
+    try { listParsed = JSON.parse(listText); } catch (e) { listParsed = listText; }
 
-    if (!response.ok) {
-      return res.json({
-        ok: false,
-        httpStatus: response.status,
-        keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4),
-        googleSaid: parsed
-      });
+    if (!listResponse.ok) {
+      result.listModelsCheck = { ok: false, httpStatus: listResponse.status, googleSaid: listParsed };
+    } else {
+      const modelNames = (listParsed.models || [])
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m) => m.name.replace('models/', ''));
+      result.listModelsCheck = { ok: true, modelsYourKeyCanUse: modelNames };
     }
-
-    const modelNames = (parsed.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-      .map((m) => m.name.replace('models/', ''));
-
-    res.json({
-      ok: true,
-      keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4),
-      modelsYourKeyCanUse: modelNames,
-      areAnyOfYourConfiguredModelsInThisList: MODEL_CANDIDATES.map((m) => ({
-        model: m,
-        available: modelNames.includes(m)
-      }))
-    });
   } catch (err) {
-    res.json({ ok: false, reason: 'Could not reach Google at all: ' + err.message });
+    result.listModelsCheck = { ok: false, reason: 'Could not reach Google: ' + err.message };
   }
+
+  // Step 2: the REAL test — an actual generateContent call, same as scoring uses.
+  // This is what actually matters, since listing models can succeed even when
+  // generation itself fails for a given key.
+  for (const modelName of MODEL_CANDIDATES) {
+    try {
+      const genResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': API_KEY },
+          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Say the word OK.' }] }] })
+        }
+      );
+      const genText = await genResponse.text();
+      let genParsed;
+      try { genParsed = JSON.parse(genText); } catch (e) { genParsed = genText; }
+
+      result.actualGenerateContentTest = {
+        modelTried: modelName,
+        httpStatus: genResponse.status,
+        ok: genResponse.ok,
+        googleSaid: genParsed
+      };
+      break; // stop at the first model we actually get a real answer from (success or failure)
+    } catch (err) {
+      result.actualGenerateContentTest = { modelTried: modelName, ok: false, reason: 'Network error: ' + err.message };
+      break;
+    }
+  }
+
+  res.json(result);
 });
 
 // ---- Safety nets: keep serving everyone else even if one request misbehaves ----
