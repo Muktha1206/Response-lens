@@ -31,12 +31,18 @@ const API_KEY = process.env.GEMINI_API_KEY;
 // automatically if a model name turns out to be wrong/retired (404) — this is
 // how Response Lens survives Google renaming/retiring models without needing
 // a manual fix each time.
+//
+// Note: Google has been retiring specific model IDs for *new accounts* even
+// while those same IDs still show up in the "list models" API — so a model
+// can look available and still 404 on an actual generation call. "-latest"
+// style aliases are the most resilient since Google keeps them pointed at
+// whatever's current, rather than a fixed version number that can expire.
 const MODEL_CANDIDATES = [
   process.env.GEMINI_MODEL,
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
   'gemini-flash-latest',
-  'gemini-2.0-flash'
+  'gemini-3.5-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-2.5-flash'
 ].filter(Boolean);
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -479,9 +485,10 @@ app.get('/api/debug-gemini', async (req, res) => {
     result.listModelsCheck = { ok: false, reason: 'Could not reach Google: ' + err.message };
   }
 
-  // Step 2: the REAL test — an actual generateContent call, same as scoring uses.
-  // This is what actually matters, since listing models can succeed even when
-  // generation itself fails for a given key.
+  // Step 2: the REAL test — an actual generateContent call for every candidate
+  // model, same as scoring uses. This is what actually matters, since listing
+  // models can succeed even when generation itself fails for a given key.
+  result.actualGenerateContentTests = [];
   for (const modelName of MODEL_CANDIDATES) {
     try {
       const genResponse = await fetch(
@@ -496,16 +503,14 @@ app.get('/api/debug-gemini', async (req, res) => {
       let genParsed;
       try { genParsed = JSON.parse(genText); } catch (e) { genParsed = genText; }
 
-      result.actualGenerateContentTest = {
+      result.actualGenerateContentTests.push({
         modelTried: modelName,
         httpStatus: genResponse.status,
         ok: genResponse.ok,
         googleSaid: genParsed
-      };
-      break; // stop at the first model we actually get a real answer from (success or failure)
+      });
     } catch (err) {
-      result.actualGenerateContentTest = { modelTried: modelName, ok: false, reason: 'Network error: ' + err.message };
-      break;
+      result.actualGenerateContentTests.push({ modelTried: modelName, ok: false, reason: 'Network error: ' + err.message });
     }
   }
 
