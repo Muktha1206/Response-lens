@@ -445,6 +445,48 @@ app.get('/api/tool-feedback', async (req, res) => {
   }
 });
 
+// ---- Diagnostic: check what Gemini says about the real key on this server ----
+// Visit /api/debug-gemini in a browser to see this. It never reveals the key
+// itself — only whether Google accepts it and which models it can use.
+app.get('/api/debug-gemini', async (req, res) => {
+  if (!API_KEY) {
+    return res.json({ ok: false, reason: 'No GEMINI_API_KEY is set on this server at all.' });
+  }
+  try {
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      headers: { 'x-goog-api-key': API_KEY }
+    });
+    const text = await response.text();
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+
+    if (!response.ok) {
+      return res.json({
+        ok: false,
+        httpStatus: response.status,
+        keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4),
+        googleSaid: parsed
+      });
+    }
+
+    const modelNames = (parsed.models || [])
+      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map((m) => m.name.replace('models/', ''));
+
+    res.json({
+      ok: true,
+      keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4),
+      modelsYourKeyCanUse: modelNames,
+      areAnyOfYourConfiguredModelsInThisList: MODEL_CANDIDATES.map((m) => ({
+        model: m,
+        available: modelNames.includes(m)
+      }))
+    });
+  } catch (err) {
+    res.json({ ok: false, reason: 'Could not reach Google at all: ' + err.message });
+  }
+});
+
 // ---- Safety nets: keep serving everyone else even if one request misbehaves ----
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection (server stays up):', reason);
