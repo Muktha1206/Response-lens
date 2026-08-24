@@ -57,6 +57,100 @@ function writeJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+// ---- Storage layer ----
+// If SUPABASE_URL and SUPABASE_KEY are set, use Supabase (survives restarts —
+// use this for anything beyond a same-day test). Otherwise fall back to local
+// JSON files, which are wiped whenever Render's free tier restarts the server.
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
+
+async function supabaseRequest(pathAndQuery, options = {}) {
+  const url = `${SUPABASE_URL}/rest/v1/${pathAndQuery}`;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase error (${res.status}): ${text}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function newId(prefix) {
+  return prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+async function storageSaveRun(row) {
+  const fullRow = { id: newId('run'), ...row, timestamp: new Date().toISOString() };
+  if (USE_SUPABASE) {
+    const inserted = await supabaseRequest('runs', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify(fullRow)
+    });
+    return inserted[0];
+  }
+  const runs = readJSON(RUNS_FILE);
+  runs.push(fullRow);
+  writeJSON(RUNS_FILE, runs);
+  return fullRow;
+}
+
+async function storageGetRuns() {
+  if (USE_SUPABASE) {
+    return supabaseRequest('runs?select=*&order=timestamp.asc');
+  }
+  return readJSON(RUNS_FILE);
+}
+
+async function storageUpdateRun(id, patch) {
+  if (USE_SUPABASE) {
+    const updated = await supabaseRequest(`runs?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify(patch)
+    });
+    return (updated && updated[0]) || null;
+  }
+  const runs = readJSON(RUNS_FILE);
+  const idx = runs.findIndex((r) => r.id === id);
+  if (idx === -1) return null;
+  runs[idx] = { ...runs[idx], ...patch };
+  writeJSON(RUNS_FILE, runs);
+  return runs[idx];
+}
+
+async function storageSaveToolFeedback(row) {
+  const fullRow = { id: newId('tf'), ...row, timestamp: new Date().toISOString() };
+  if (USE_SUPABASE) {
+    const inserted = await supabaseRequest('tool_feedback', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify(fullRow)
+    });
+    return inserted[0];
+  }
+  const items = readJSON(TOOL_FEEDBACK_FILE);
+  items.push(fullRow);
+  writeJSON(TOOL_FEEDBACK_FILE, items);
+  return fullRow;
+}
+
+async function storageGetToolFeedback() {
+  if (USE_SUPABASE) {
+    return supabaseRequest('tool_feedback?select=*&order=timestamp.asc');
+  }
+  return readJSON(TOOL_FEEDBACK_FILE);
+}
+
 const SYSTEM_PROMPT = `You are Response Lens, a coaching engine for Kapture CX support agents. Kapture CX sells a customer-support SaaS platform; agents reply to client tickets about configuration, access, bugs, billing, feature requests, and how-to questions.
 
 You receive only two things: the customer's message and the agent's draft reply. You do NOT receive a ticket type — infer it yourself from context, silently, and use it to calibrate your judgment. Do not mention that you inferred it unless it changes your verdict in a way the agent needs to know.
@@ -294,40 +388,56 @@ app.post('/api/score', async (req, res) => {
 });
 
 // ---- Runs (the shared log) ----
-app.post('/api/runs', (req, res) => {
-  const runs = readJSON(RUNS_FILE);
-  const id = 'run_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  const row = { id, ...req.body, timestamp: new Date().toISOString() };
-  runs.push(row);
-  writeJSON(RUNS_FILE, runs);
-  res.json(row);
+app.post('/api/runs', async (req, res) => {
+  try {
+    const row = await storageSaveRun(req.body);
+    res.json(row);
+  } catch (err) {
+    console.error('Error saving run:', err.message);
+    res.status(500).json({ error: 'Could not save this run: ' + err.message });
+  }
 });
 
-app.get('/api/runs', (req, res) => {
-  res.json(readJSON(RUNS_FILE));
+app.get('/api/runs', async (req, res) => {
+  try {
+    const rows = await storageGetRuns();
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching runs:', err.message);
+    res.status(500).json({ error: 'Could not load the shared log: ' + err.message });
+  }
 });
 
-app.patch('/api/runs/:id', (req, res) => {
-  const runs = readJSON(RUNS_FILE);
-  const idx = runs.findIndex((r) => r.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Run not found.' });
-  runs[idx] = { ...runs[idx], ...req.body };
-  writeJSON(RUNS_FILE, runs);
-  res.json(runs[idx]);
+app.patch('/api/runs/:id', async (req, res) => {
+  try {
+    const updated = await storageUpdateRun(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ error: 'Run not found.' });
+    res.json(updated);
+  } catch (err) {
+    console.error('Error updating run:', err.message);
+    res.status(500).json({ error: 'Could not save feedback: ' + err.message });
+  }
 });
 
 // ---- Tool-level feedback (admin-review list) ----
-app.post('/api/tool-feedback', (req, res) => {
-  const items = readJSON(TOOL_FEEDBACK_FILE);
-  const id = 'tf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  const row = { id, ...req.body, timestamp: new Date().toISOString() };
-  items.push(row);
-  writeJSON(TOOL_FEEDBACK_FILE, items);
-  res.json(row);
+app.post('/api/tool-feedback', async (req, res) => {
+  try {
+    const row = await storageSaveToolFeedback(req.body);
+    res.json(row);
+  } catch (err) {
+    console.error('Error saving tool feedback:', err.message);
+    res.status(500).json({ error: 'Could not save tool feedback: ' + err.message });
+  }
 });
 
-app.get('/api/tool-feedback', (req, res) => {
-  res.json(readJSON(TOOL_FEEDBACK_FILE));
+app.get('/api/tool-feedback', async (req, res) => {
+  try {
+    const rows = await storageGetToolFeedback();
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching tool feedback:', err.message);
+    res.status(500).json({ error: 'Could not load tool feedback: ' + err.message });
+  }
 });
 
 // ---- Safety nets: keep serving everyone else even if one request misbehaves ----
@@ -340,6 +450,9 @@ process.on('uncaughtException', (err) => {
 
 app.listen(PORT, () => {
   console.log(`Response Lens server running at http://localhost:${PORT}`);
+  console.log(USE_SUPABASE
+    ? 'Storage: Supabase (persistent — survives restarts)'
+    : 'Storage: local JSON files (WARNING: wiped on every restart/redeploy on Render free tier)');
   if (!API_KEY) {
     console.warn('WARNING: GEMINI_API_KEY is not set. Scoring requests will fail until you add it to .env.');
   }
