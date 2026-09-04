@@ -27,22 +27,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.GEMINI_API_KEY;
 
-// If GEMINI_MODEL is set, try it first. Either way, fall back through this list
-// automatically if a model name turns out to be wrong/retired (404) — this is
-// how Response Lens survives Google renaming/retiring models without needing
-// a manual fix each time.
-//
-// Note: Google has been retiring specific model IDs for *new accounts* even
-// while those same IDs still show up in the "list models" API — so a model
-// can look available and still 404 on an actual generation call. "-latest"
-// style aliases are the most resilient since Google keeps them pointed at
-// whatever's current, rather than a fixed version number that can expire.
 const MODEL_CANDIDATES = [
   process.env.GEMINI_MODEL,
-  'gemini-flash-latest',
   'gemini-3.5-flash-lite',
   'gemini-3.6-flash',
-  'gemini-2.5-flash'
+  'gemini-3.5-flash'
 ].filter(Boolean);
 
 const DATA_DIR = path.join(__dirname, 'data');
@@ -64,9 +53,6 @@ function writeJSON(file, data) {
 }
 
 // ---- Storage layer ----
-// If SUPABASE_URL and SUPABASE_KEY are set, use Supabase (survives restarts —
-// use this for anything beyond a same-day test). Otherwise fall back to local
-// JSON files, which are wiped whenever Render's free tier restarts the server.
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
@@ -161,19 +147,14 @@ const SYSTEM_PROMPT = `You are Response Lens, a coaching engine for Kapture CX s
 
 You receive only two things: the customer's message and the agent's draft reply. You do NOT receive a ticket type — infer it yourself from context, silently, and use it to calibrate your judgment. Do not mention that you inferred it unless it changes your verdict in a way the agent needs to know.
 
-Be terse everywhere.
+Be terse everywhere. Agents read this in seconds between tickets. No sentence should run past ~15 words. No preamble anywhere in the JSON values.
+
 VOICE — read this before writing anything for the client:
 Write like a warm, competent human agent — not a corporate template.
 Use contractions (we're, that's, I'll). Never use stock phrases like
 "Rest assured," "We apologize for any inconvenience," "Please don't
 hesitate to reach out," or "We value your feedback." Vary sentence
-openings. The signoff must sound like a real person, not a template close.Agents read this in seconds between tickets.
-VOICE — read this before writing anything for the client:
-Write like a warm, competent human agent — not a corporate template.
-Use contractions (we're, that's, I'll). Never use stock phrases like
-"Rest assured," "We apologize for any inconvenience," "Please don't
-hesitate to reach out," or "We value your feedback." Vary sentence
-openings. The signoff must sound like a real person, not a template close.No sentence should run past ~15 words. No preamble anywhere in the JSON values.
+openings. The signoff must sound like a real person, not a template close.
 
 STEP 1 — SILENTLY ASSESS RISK LEVEL
 Decide if this ticket carries escalation / Critical Care risk: repeat-contact language ("second time," "again"), strong frustration or churn language, business-impact statements (missed SLAs, financial loss, team-wide disruption), or a direct threat to the relationship. If risk is present, apply a stricter bar on tone, ownership, and evidence.
@@ -213,8 +194,8 @@ Split the ideal reply into two parts:
   - "empathy": one short line acknowledging the inconvenience or impact, e.g. "We understand this is holding up your reporting." Keep it genuine, not generic — tie it to what the customer actually said. Skip only if the message carries no frustration or impact at all, and in that case set this to an empty string.
   - "opening": one line directly answering the client's core question or key finding.
   - "body": 1-3 short plain-language points with evidence/explanation. Use [square-bracket placeholders] where the draft lacks specifics.
-  - "decision": the concrete choice or next step offered to the client.
-  - "signoff": one short, warm closing line.
+  - "decision": the concrete choice or next step offered to the client. Do NOT invent or imply a specific ETA or deadline unless the agent's draft already committed to one.
+  - "signoff": one short, warm closing line written like a real person — not a template close.
 
 STEP 5 — COACHING POINTERS
 2-3 tips, each ≤10 words, imperative + one clause of why. The FIRST tip must be the single most important fix — the "biggest win." Example: "Add ETA — client doesn't know when to expect an update." No jargon.
@@ -264,7 +245,7 @@ async function callGemini(userContent, modelName) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000); // don't hang forever
+  const timeout = setTimeout(() => controller.abort(), 25000);
 
   let response;
   try {
@@ -307,8 +288,6 @@ async function callGemini(userContent, modelName) {
 
   const data = await response.json();
 
-  // Content can be withheld by Gemini's safety filters — this is not transient,
-  // so don't waste retries on it; tell the agent plainly instead.
   const blockReason = data.promptFeedback && data.promptFeedback.blockReason;
   if (blockReason) {
     const err = new Error(
@@ -346,14 +325,14 @@ async function callGemini(userContent, modelName) {
 }
 
 function isRetryable(err) {
-  if (err.friendly) return false; // explicit, non-transient — don't retry
+  if (err.friendly) return false;
   if (err.retryable) return true;
-  if (err.status === 503 || err.status === 429) return true; // busy / rate-limited
+  if (err.status === 503 || err.status === 429) return true;
   if (err.raw && /UNAVAILABLE|overloaded/i.test(err.raw)) return true;
   return false;
 }
 
-let workingModel = null; // once we find a model that works, stick with it for future requests
+let workingModel = null;
 
 app.post('/api/score', async (req, res) => {
   if (!API_KEY) {
@@ -365,7 +344,7 @@ app.post('/api/score', async (req, res) => {
   }
 
   const userContent = `CUSTOMER MESSAGE:\n${customerMessage}\n\nAGENT DRAFT REPLY:\n${draftReply}`;
-  const MAX_ATTEMPTS_PER_MODEL = 2; // fewer retries per model now that we cascade across several
+  const MAX_ATTEMPTS_PER_MODEL = 2;
   const modelsToTry = workingModel ? [workingModel, ...MODEL_CANDIDATES] : MODEL_CANDIDATES;
   let lastErr;
 
@@ -375,24 +354,20 @@ app.post('/api/score', async (req, res) => {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
       try {
         const parsed = await callGemini(userContent, modelName);
-        workingModel = modelName; // remember what worked
+        workingModel = modelName;
         return res.json(parsed);
       } catch (err) {
         lastErr = err;
         console.error(`[score] model=${modelName} attempt=${attempt}/${MAX_ATTEMPTS_PER_MODEL}: ${err.message}`);
 
         if (err.friendly) {
-          // Explicit, non-transient, not model-specific (e.g. safety block) — no
-          // point trying other models, stop immediately.
           moveToNextModel = false;
           break;
         }
         if (attempt < MAX_ATTEMPTS_PER_MODEL && isRetryable(err) && !err.modelNotFound) {
-          await sleep(attempt * 800); // brief pause before retrying the same model
+          await sleep(attempt * 800);
           continue;
         }
-        // Either "model not found" or we've used up retries on a busy/transient
-        // error — either way, try the next model in the list instead of giving up.
         moveToNextModel = true;
         break;
       }
@@ -463,10 +438,6 @@ app.get('/api/tool-feedback', async (req, res) => {
   }
 });
 
-// ---- Diagnostic: check what Gemini says about the real key on this server ----
-// Visit /api/debug-gemini in a browser to see this. It never reveals the key
-// itself — only whether Google accepts it and whether an actual scoring-style
-// call succeeds.
 app.get('/api/debug-gemini', async (req, res) => {
   if (!API_KEY) {
     return res.json({ ok: false, reason: 'No GEMINI_API_KEY is set on this server at all.' });
@@ -476,7 +447,6 @@ app.get('/api/debug-gemini', async (req, res) => {
     keyLooksLike: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4)
   };
 
-  // Step 1: list models (cheap, low-stakes check)
   try {
     const listResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
       headers: { 'x-goog-api-key': API_KEY }
@@ -497,9 +467,6 @@ app.get('/api/debug-gemini', async (req, res) => {
     result.listModelsCheck = { ok: false, reason: 'Could not reach Google: ' + err.message };
   }
 
-  // Step 2: the REAL test — an actual generateContent call for every candidate
-  // model, same as scoring uses. This is what actually matters, since listing
-  // models can succeed even when generation itself fails for a given key.
   result.actualGenerateContentTests = [];
   for (const modelName of MODEL_CANDIDATES) {
     try {
@@ -529,7 +496,6 @@ app.get('/api/debug-gemini', async (req, res) => {
   res.json(result);
 });
 
-// ---- Safety nets: keep serving everyone else even if one request misbehaves ----
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection (server stays up):', reason);
 });
